@@ -1,0 +1,70 @@
+[project]
+name = "edge-vla"
+version = "0.1.0"
+description = "Edge/Robotics service (SO-101 VLA) — chạy độc lập, không phụ thuộc root project"
+requires-python = ">=3.12"
+dependencies = [
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0.0",
+    "numpy>=1.26.0",
+    "opencv-python>=4.9,<5",
+    # Base lerobot (LIBERO env helpers). Torch comes via lerobot; use CPU wheels on
+    # Linux/Docker via [tool.uv.sources] below — not the CUDA stack.
+    "lerobot>=0.6.1",
+    "mcp>=1.9,<2.0",
+    "python-ulid>=4.0.0",
+    # Public camera stream (WebRTC), signaling trực tiếp trên Edge — xem webrtc_stream/.
+    "aiortc>=1.9",
+]
+
+[project.optional-dependencies]
+# Marker extra for CPU-only torch wheels (Docker/deploy: `uv sync --extra cpu`).
+cpu = [
+    "torch",
+    "torchvision",
+]
+sim = [
+    # mode=sim: benchmark LIBERO gốc (kéo theo mujoco). Máy chỉ chạy mode=real không cần.
+    "robosuite>=1.4",
+    "hf-libero>=0.1.4,<0.2.0",
+]
+smolvla = [
+    # SmolVLA policy backend (local GPU dev). Not installed in Cloud Run IK deploy.
+    "lerobot[dataset,smolvla]>=0.6.1",
+    "num2words>=0.5.13",
+]
+real = [
+    "lerobot[feetech]>=0.6.1",
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.8.0",
+]
+
+[tool.uv]
+package = false
+# lerobot pulls in opencv-python-headless, which installs into the same
+# `cv2/` package path as our own opencv-python (GUI build) and silently
+# clobbers it — viewer.py's cv2.imshow then fails with "GUI: NONE"
+# (confirmed via cv2.getBuildInformation()). Exclude the headless variant
+# so only the GUI-enabled opencv-python is ever installed.
+override-dependencies = ["opencv-python-headless; sys_platform == 'never'"]
+# egl-probe / hf-egl-probe (via hf-libero) ship CMakeLists with
+# cmake_minimum_required(VERSION 2.8.12). CMake 4.x refuses that and aborts
+# the PEP 517 build. Pin cmake<4 into each package's isolated build env so the
+# build always sees a CMake 3.x binary regardless of the system PATH.
+# Requires uv >= 0.8.4 (older uv silently ignores extra-build-dependencies).
+# Docker builds also install system cmake via apt (see Dockerfile).
+required-version = ">=0.8.4"
+extra-build-dependencies = { egl-probe = ["cmake<4"], hf-egl-probe = ["cmake<4"] }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+# `uv sync --extra cpu` (Docker/deploy) → CPU wheels, no CUDA stack.
+torch = { index = "pytorch-cpu", extra = "cpu" }
+torchvision = { index = "pytorch-cpu", extra = "cpu" }

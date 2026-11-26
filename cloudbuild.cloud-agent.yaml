@@ -1,0 +1,26 @@
+# Build context: src/cloud-agent (same as local Dockerfile build).
+substitutions:
+  _REGION: asia-southeast1
+  _AR_REPO: p172
+  _TAG: latest
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/cloud-agent:${_TAG}
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/cloud-agent:latest
+      - -f
+      - src/cloud-agent/Dockerfile
+      - src/cloud-agent
+
+images:
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/cloud-agent:${_TAG}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/cloud-agent:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 1200s

@@ -1,0 +1,50 @@
+# Shrink source upload for `gcloud builds submit`. Docker still applies
+# each context's .dockerignore during the image build.
+
+.git
+.github
+.cursor
+.vscode
+.idea
+
+.venv
+**/.venv
+**/.venv*/
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+**/node_modules
+**/.next
+**/.uv-cache
+.uv-cache
+
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+docs/
+presentation/
+eval/
+data/
+# Repo-root runtime logs only — do NOT use bare `logs/` (that also drops
+# src/frontend-ui/components/logs/{LogViewer,TimelineView}.tsx).
+/logs/
+.ai-log/
+.ai-orchestration/
+.planning/
+.agents/
+agent-transcripts/
+
+*.md
+!requirements.txt
+!**/requirements.txt
+
+*.log
+*.db
+*.sqlite3
+.DS_Store
+htmlcov/
+.coverage
+coverage.xml

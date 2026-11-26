@@ -1,0 +1,30 @@
+# Build context: src/frontend-ui. NEXT_PUBLIC_* match deploy.yml.
+substitutions:
+  _REGION: asia-southeast1
+  _AR_REPO: p172
+  _TAG: latest
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --build-arg
+      - NEXT_PUBLIC_API_BASE=http://cloud-agent:8000
+      - --build-arg
+      - NEXT_PUBLIC_USE_MOCK=0
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/frontend:${_TAG}
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/frontend:latest
+      - -f
+      - src/frontend-ui/Dockerfile
+      - src/frontend-ui
+
+images:
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/frontend:${_TAG}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/frontend:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 1200s

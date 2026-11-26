@@ -1,0 +1,124 @@
+# Production stack for a single VM.
+# Secrets live in /opt/p172/.env (not in git). Image tags in .env.images (written by CI).
+#
+# Usage on the VM:
+#   docker compose --env-file .env --env-file .env.images up -d
+
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+      - cloud-agent
+    networks:
+      - p172
+
+  frontend:
+    image: ${FRONTEND_IMAGE}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "8080"
+      NEXT_PUBLIC_USE_MOCK: "0"
+      # Server-side proxy to edge (signaling / MJPEG). Edge uses host networking.
+      EDGE_VLA_URL: ${EDGE_VLA_INTERNAL_URL:-http://host.docker.internal:8931}
+      EDGE_VLA_TOKEN: ${EDGE_VLA_TOKEN:-}
+      WEBRTC_STUN_URLS: ${WEBRTC_STUN_URLS:-stun:stun.l.google.com:19302}
+      WEBRTC_TURN_URLS: ${WEBRTC_TURN_URLS:-}
+      WEBRTC_TURN_USERNAME: ${WEBRTC_TURN_USERNAME:-}
+      WEBRTC_TURN_CREDENTIAL: ${WEBRTC_TURN_CREDENTIAL:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - cloud-agent
+    networks:
+      - p172
+
+  cloud-agent:
+    image: ${CLOUD_IMAGE}
+    restart: unless-stopped
+    env_file:
+      - .env
+    # Localhost-only publish so Edge (network_mode: host) can POST /edge/register
+    # without exposing the API on the public interface (Caddy still fronts browsers).
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      APP_ENV: production
+      APP_HOST: 0.0.0.0
+      APP_PORT: "8000"
+      AUTH_REQUIRED: ${AUTH_REQUIRED:-true}
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-true}
+      CORS_ORIGINS: ${PUBLIC_BASE_URL}
+      UI_BASE: ${PUBLIC_BASE_URL}
+      GOOGLE_REDIRECT_URI: ${PUBLIC_BASE_URL}/api/v1/auth/google/callback
+      EDGE_ROBOT_MODE: ${EDGE_ROBOT_MODE:-sim}
+      EDGE_JWT_SECRET: ${EDGE_JWT_SECRET}
+      MCP_ENDPOINT_URL: ${MCP_ENDPOINT_URL:-http://host.docker.internal:8931/mcp}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://postgres:postgres@postgres:5432/p172}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - p172
+
+  # Host networking so WebRTC UDP/ICE can use the VM public IP (Cloud Run cannot).
+  edge-vla:
+    image: ${EDGE_IMAGE}
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - cloud-agent
+    environment:
+      PORT: "8931"
+      ROBOT_MODE: sim
+      VLA_POLICY: ik
+      MUJOCO_GL: osmesa
+      EDGE_VLA_HEADLESS: "1"
+      EDGE_VLA_TOKEN: ${EDGE_VLA_TOKEN:-}
+      # Edge → Cloud (host loopback → published 127.0.0.1:8000)
+      CLOUD_AGENT_BASE_URL: ${CLOUD_AGENT_BASE_URL:-http://127.0.0.1:8000}
+      # Cloud → Edge (bridge container reaches host Edge via host-gateway)
+      EDGE_PUBLIC_URL: ${EDGE_PUBLIC_URL:-http://host.docker.internal:8931}
+      # Must match cloud-agent EDGE_JWT_SECRET (HS256 registration)
+      EDGE_JWT_SECRET: ${EDGE_JWT_SECRET}
+      EDGE_ROBOT_ID: ${EDGE_ROBOT_ID:-}
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-p172}
+    volumes:
+      - p172_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - p172
+
+networks:
+  p172:
+    driver: bridge
+
+volumes:
+  p172_pgdata:
+  caddy_data:
+  caddy_config:

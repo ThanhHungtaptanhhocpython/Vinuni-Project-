@@ -1,0 +1,75 @@
+# PR CI: lint + pytest for cloud-agent on Cloud Build (not the Actions runner).
+# Submitted from `.github/workflows/ci.yml` on pull_request → main.
+#
+# Tests require Postgres (see src/cloud-agent/tests/conftest.py). Locally that is
+# docker compose on localhost:5433; here we run postgres on the cloudbuild
+# network and point DATABASE_URL at it.
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    id: start-postgres
+    args:
+      - run
+      - --rm
+      - -d
+      - --name=ci-postgres
+      - --network=cloudbuild
+      - -e
+      - POSTGRES_USER=postgres
+      - -e
+      - POSTGRES_PASSWORD=postgres
+      - -e
+      - POSTGRES_DB=p172
+      - postgres:16-alpine
+
+  - name: gcr.io/cloud-builders/docker
+    id: wait-postgres
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        for i in $(seq 1 60); do
+          if docker exec ci-postgres pg_isready -U postgres -d p172 >/dev/null 2>&1; then
+            echo "postgres ready"
+            exit 0
+          fi
+          sleep 1
+        done
+        echo "postgres did not become ready in time" >&2
+        docker logs ci-postgres >&2 || true
+        exit 1
+
+  - name: python:3.11-slim
+    id: test-cloud-agent
+    entrypoint: bash
+    env:
+      - "APP_ENV=test"
+      - "OPENAI_API_KEY=test-key"
+      - "JWT_SECRET=test-only-jwt-secret-do-not-use-in-production-32"
+      - "LANGCHAIN_TRACING_V2=false"
+      - "LANGSMITH_TRACING=false"
+      - "LANGFUSE_ENABLED=false"
+      - "DEBIAN_FRONTEND=noninteractive"
+      # Hostname is the docker --name from start-postgres (cloudbuild network).
+      - "DATABASE_URL=postgresql+psycopg://postgres:postgres@ci-postgres:5432/p172_test"
+      - "TEST_DATABASE_URL=postgresql+psycopg://postgres:postgres@ci-postgres:5432/p172_test"
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        apt-get update -qq
+        apt-get install -y -qq --no-install-recommends gcc g++ libpq-dev >/dev/null
+        pip install --no-cache-dir -q -r src/cloud-agent/requirements.txt
+        pip install --no-cache-dir -q "ruff>=0.8.0" "pytest>=8.0.0" "pytest-asyncio>=0.24.0" "httpx>=0.28.0"
+        cd src/cloud-agent
+        ruff check .
+        pytest tests/ -v --tb=short
+
+options:
+  # LEGACY → logs go to GCS + Cloud Logging so `gcloud builds submit`
+  # can print pytest/ruff output into the GitHub Actions job log.
+  # No custom machineType — E2_HIGHCPU_* often hits regional quota.
+  logging: LEGACY
+
+timeout: 1800s

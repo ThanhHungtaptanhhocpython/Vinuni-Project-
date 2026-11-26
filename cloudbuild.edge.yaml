@@ -1,0 +1,27 @@
+# Build context: repo root (same as `docker build -f src/edge_vla/Dockerfile .`).
+substitutions:
+  _REGION: asia-southeast1
+  _AR_REPO: p172
+  _TAG: latest
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/edge-vla:${_TAG}
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/edge-vla:latest
+      - -f
+      - src/edge_vla/Dockerfile
+      - .
+
+images:
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/edge-vla:${_TAG}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/edge-vla:latest
+
+options:
+  diskSizeGb: 100
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 3600s

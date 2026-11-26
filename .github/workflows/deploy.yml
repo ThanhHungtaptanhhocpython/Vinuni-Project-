@@ -1,0 +1,247 @@
+name: Deploy
+
+# Path filter → Cloud Build (images → Artifact Registry) → SSH restart on GCE VM.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  REGION: asia-southeast1
+  AR_REPO: p172
+  DEPLOY_DIR: /opt/p172
+  # Regional staging bucket (create once; default PROJECT_ID_cloudbuild is often US / org-blocked).
+  CB_BUCKET: ${{ vars.GCP_PROJECT_ID }}-cb-asia-southeast1
+
+jobs:
+  changes:
+    runs-on: ["self-hosted", "Linux", "X64"]
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      edge: ${{ steps.filter.outputs.edge }}
+      deploy: ${{ steps.filter.outputs.deploy }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Plain git diff — dorny/paths-filter was still flipping all filters true
+      # on this self-hosted runner (even with fetch-depth: 2).
+      - name: Detect changed paths
+        id: filter
+        run: |
+          set -euo pipefail
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "workflow_dispatch → build all"
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+            echo "edge=true" >> "$GITHUB_OUTPUT"
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "${BEFORE}" ] || [ "${BEFORE}" = "0000000000000000000000000000000000000000" ]; then
+            BEFORE="$(git rev-parse "${AFTER}^")"
+          fi
+          echo "Comparing ${BEFORE}..${AFTER}"
+          mapfile -t FILES < <(git diff --name-only "${BEFORE}" "${AFTER}")
+          printf 'Changed files (%d):\n' "${#FILES[@]}"
+          if ((${#FILES[@]} > 0)); then
+            printf '  %s\n' "${FILES[@]}"
+          fi
+
+          backend=false; frontend=false; edge=false; deploy=false
+          for f in "${FILES[@]+"${FILES[@]}"}"; do
+            case "$f" in
+              src/cloud-agent/*|cloudbuild.cloud-agent.yaml) backend=true ;;
+              src/frontend-ui/*|cloudbuild.frontend.yaml) frontend=true ;;
+              src/edge_vla/*|cloudbuild.edge.yaml) edge=true ;;
+              deploy/*|.gcloudignore|.github/workflows/deploy.yml) deploy=true ;;
+            esac
+          done
+
+          echo "backend=${backend}" >> "$GITHUB_OUTPUT"
+          echo "frontend=${frontend}" >> "$GITHUB_OUTPUT"
+          echo "edge=${edge}" >> "$GITHUB_OUTPUT"
+          echo "deploy=${deploy}" >> "$GITHUB_OUTPUT"
+          echo "Detected: backend=${backend} frontend=${frontend} edge=${edge} deploy=${deploy}"
+
+  build:
+    needs: changes
+    if: |
+      needs.changes.outputs.backend == 'true' ||
+      needs.changes.outputs.frontend == 'true' ||
+      needs.changes.outputs.edge == 'true' ||
+      needs.changes.outputs.deploy == 'true' ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ["self-hosted", "Linux", "X64"]
+    outputs:
+      tag: ${{ github.sha }}
+      built_backend: ${{ steps.flags.outputs.backend }}
+      built_frontend: ${{ steps.flags.outputs.frontend }}
+      built_edge: ${{ steps.flags.outputs.edge }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SA_EMAIL }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Decide what to build
+        id: flags
+        run: |
+          # Only rebuild images whose sources changed. workflow_dispatch already
+          # sets all change flags true. Do NOT force-all on deploy.yml edits.
+          BACKEND="${{ needs.changes.outputs.backend }}"
+          FRONTEND="${{ needs.changes.outputs.frontend }}"
+          EDGE="${{ needs.changes.outputs.edge }}"
+          echo "backend=${BACKEND}" >> "$GITHUB_OUTPUT"
+          echo "frontend=${FRONTEND}" >> "$GITHUB_OUTPUT"
+          echo "edge=${EDGE}" >> "$GITHUB_OUTPUT"
+          echo "Will build: backend=${BACKEND} frontend=${FRONTEND} edge=${EDGE}"
+
+      # Requires a regional GCS bucket + IAM. See deploy/README.md §4.
+      - name: Build & push edge-vla (Cloud Build)
+        if: steps.flags.outputs.edge == 'true'
+        run: |
+          gcloud builds submit \
+            --project="${{ env.PROJECT_ID }}" \
+            --region="${{ env.REGION }}" \
+            --config=cloudbuild.edge.yaml \
+            --substitutions=_TAG=${{ github.sha }},_REGION=${{ env.REGION }},_AR_REPO=${{ env.AR_REPO }} \
+            --gcs-source-staging-dir="gs://${{ env.CB_BUCKET }}/source" \
+            --default-buckets-behavior=regional-user-owned-bucket \
+            --timeout=3600s \
+            .
+
+      - name: Build & push cloud-agent (Cloud Build)
+        if: steps.flags.outputs.backend == 'true'
+        run: |
+          gcloud builds submit \
+            --project="${{ env.PROJECT_ID }}" \
+            --region="${{ env.REGION }}" \
+            --config=cloudbuild.cloud-agent.yaml \
+            --substitutions=_TAG=${{ github.sha }},_REGION=${{ env.REGION }},_AR_REPO=${{ env.AR_REPO }} \
+            --gcs-source-staging-dir="gs://${{ env.CB_BUCKET }}/source" \
+            --default-buckets-behavior=regional-user-owned-bucket \
+            --timeout=1200s \
+            .
+
+      - name: Build & push frontend (Cloud Build)
+        if: steps.flags.outputs.frontend == 'true'
+        run: |
+          # Browser stays on the public origin; Next rewrites /api/* to
+          # cloud-agent inside the compose network (see cloudbuild.frontend.yaml).
+          gcloud builds submit \
+            --project="${{ env.PROJECT_ID }}" \
+            --region="${{ env.REGION }}" \
+            --config=cloudbuild.frontend.yaml \
+            --substitutions=_TAG=${{ github.sha }},_REGION=${{ env.REGION }},_AR_REPO=${{ env.AR_REPO }} \
+            --gcs-source-staging-dir="gs://${{ env.CB_BUCKET }}/source" \
+            --default-buckets-behavior=regional-user-owned-bucket \
+            --timeout=1200s \
+            .
+
+  deploy:
+    needs: [changes, build]
+    if: needs.build.result == 'success'
+    runs-on: ["self-hosted", "Linux", "X64"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SA_EMAIL }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Sync compose files to VM
+        run: |
+          VM="${{ vars.GCP_VM_NAME }}"
+          ZONE="${{ vars.GCP_VM_ZONE }}"
+          if [ -z "$VM" ] || [ -z "$ZONE" ]; then
+            echo "Set repository vars GCP_VM_NAME and GCP_VM_ZONE"
+            exit 1
+          fi
+
+          gcloud compute ssh "$VM" --zone "$ZONE" --tunnel-through-iap --command "
+            sudo mkdir -p ${{ env.DEPLOY_DIR }}
+            sudo chown -R \$(whoami):\$(whoami) ${{ env.DEPLOY_DIR }}
+          "
+
+          gcloud compute scp --tunnel-through-iap --zone "$ZONE" \
+            deploy/docker-compose.yml deploy/Caddyfile \
+            "$VM:${{ env.DEPLOY_DIR }}/"
+
+      - name: Pull images and restart stack
+        env:
+          TAG: ${{ github.sha }}
+          REGION: ${{ env.REGION }}
+          PROJECT_ID: ${{ env.PROJECT_ID }}
+          AR_REPO: ${{ env.AR_REPO }}
+        run: |
+          set -euo pipefail
+          VM="${{ vars.GCP_VM_NAME }}"
+          ZONE="${{ vars.GCP_VM_ZONE }}"
+          REG="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}"
+
+          : > /tmp/p172.env.images.new
+          if [ "${{ needs.build.outputs.built_edge }}" = "true" ]; then
+            echo "EDGE_IMAGE=${REG}/edge-vla:${TAG}" >> /tmp/p172.env.images.new
+          fi
+          if [ "${{ needs.build.outputs.built_backend }}" = "true" ]; then
+            echo "CLOUD_IMAGE=${REG}/cloud-agent:${TAG}" >> /tmp/p172.env.images.new
+          fi
+          if [ "${{ needs.build.outputs.built_frontend }}" = "true" ]; then
+            echo "FRONTEND_IMAGE=${REG}/frontend:${TAG}" >> /tmp/p172.env.images.new
+          fi
+
+          gcloud compute scp --tunnel-through-iap --zone "$ZONE" \
+            /tmp/p172.env.images.new "$VM:${{ env.DEPLOY_DIR }}/.env.images.new"
+
+          gcloud compute ssh "$VM" --zone "$ZONE" --tunnel-through-iap --command '
+            set -euo pipefail
+            cd '"${{ env.DEPLOY_DIR }}"'
+            if [ ! -f .env ]; then
+              echo "Missing '"${{ env.DEPLOY_DIR }}"'/.env — copy deploy/.env.example and fill secrets first."
+              exit 1
+            fi
+
+            touch .env.images
+            while IFS= read -r line || [ -n "$line" ]; do
+              [ -z "$line" ] && continue
+              key="${line%%=*}"
+              grep -v "^${key}=" .env.images > .env.images.tmp || true
+              echo "$line" >> .env.images.tmp
+              mv .env.images.tmp .env.images
+            done < .env.images.new
+            rm -f .env.images.new
+
+            for key in EDGE_IMAGE CLOUD_IMAGE FRONTEND_IMAGE; do
+              if ! grep -q "^${key}=" .env.images; then
+                echo "Missing $key in .env.images — run workflow_dispatch once to build all images."
+                exit 1
+              fi
+            done
+
+            gcloud auth configure-docker '"${REGION}"'-docker.pkg.dev --quiet
+            # Drop unused images from older deploys so pull has room.
+            docker image prune -af || true
+            docker compose --env-file .env --env-file .env.images pull
+            docker compose --env-file .env --env-file .env.images up -d --remove-orphans
+            # After switch-over, drop the previous SHA tags (no longer referenced).
+            docker image prune -af || true
+            docker compose --env-file .env --env-file .env.images ps
+            df -h / | tail -1
+            docker system df
+          '

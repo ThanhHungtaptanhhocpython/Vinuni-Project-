@@ -1,0 +1,48 @@
+[project]
+name = "p172-cloud-agent"
+version = "0.1.0"
+description = "Standalone cloud agent service for P-172"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "pydantic[email]>=2.10.0",
+    "pydantic-settings>=2.7.0",
+    "python-dotenv>=1.0.0",
+    "langchain>=0.3.0",
+    "langchain-openai>=0.3.0",
+    "langchain-google-genai>=2.0.0",
+    "langgraph>=0.2.0",
+    "langsmith>=0.3.0",
+    "langfuse>=3.8.0",
+    "openai>=1.0.0",
+    "sqlalchemy>=2.0.0",
+    "qdrant-client>=1.12.0",
+    "psycopg[binary]>=3.2.0",
+    "passlib[bcrypt]>=1.7.4",
+    # passlib 1.7.4 (2020, unmaintained) self-tests bcrypt at import time by
+    # hashing a >72-byte string to detect a legacy truncation bug — bcrypt
+    # >=4.1 raises ValueError on that instead of the silent truncation passlib
+    # expects, crashing every hash_password()/verify_password() call
+    # (confirmed via real traceback, not a guess). Pin below the break.
+    "bcrypt<4.1",
+    "python-jose[cryptography]>=3.3.0",
+    "pyjwt[crypto]>=2.10.0",
+    "authlib>=1.3.0",
+    "itsdangerous>=2.2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.8.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.28.0",
+]
+
+[tool.pytest.ini_options]
+addopts = "-p no:cacheprovider"
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

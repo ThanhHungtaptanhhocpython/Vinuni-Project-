@@ -1,0 +1,45 @@
+name: CI
+
+# Pull requests targeting main → submit tests to Google Cloud Build.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  REGION: asia-southeast1
+  CB_BUCKET: ${{ vars.GCP_PROJECT_ID }}-cb-asia-southeast1
+
+jobs:
+  test:
+    name: Cloud Build tests
+    runs-on: ["self-hosted", "Linux", "X64"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SA_EMAIL }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Run lint + pytest (Cloud Build)
+        run: |
+          # Do not pass --suppress-logs: default submit streams step output
+          # (ruff/pytest) into this Actions log. --stream-logs is not on all
+          # gcloud versions (regional builds reject it).
+          gcloud builds submit \
+            --project="${{ env.PROJECT_ID }}" \
+            --region="${{ env.REGION }}" \
+            --config=cloudbuild.ci.yaml \
+            --gcs-source-staging-dir="gs://${{ env.CB_BUCKET }}/source" \
+            --default-buckets-behavior=regional-user-owned-bucket \
+            --timeout=1800s \
+            .

@@ -1,0 +1,33 @@
+policy:
+    path: /home/minhhieuano/2222/workspace/ai_in_action/dataset_build/testmodel_2/model_v100/content/outputs/train/smolvla_arm_v3/checkpoints/100000/pretrained_model
+    empty_cameras: 1
+    device: cuda
+robot:
+    type: so101_follower
+    port: /dev/ttyACM0
+    id: follower_arm
+    max_relative_target: 30.0
+    disable_torque_on_disconnect: true
+    cameras:
+        wrist:
+            type: opencv
+            index_or_path: /dev/video4
+            width: 1280
+            height: 720
+            fps: 30
+            fourcc: MJPG
+        top:
+            type: opencv
+            index_or_path: /dev/video0
+            width: 640
+            height: 480
+            fps: 30
+            fourcc: MJPG
+strategy:
+    type: base
+fps: 30
+task: "pick up the sandwich and put it in the cart"
+rename_map:
+    observation.images.wrist: observation.images.camera1
+    observation.images.top: observation.images.camera2
+return_to_initial_position: true
